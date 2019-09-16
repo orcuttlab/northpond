@@ -1,0 +1,231 @@
+---
+title: "North Pond FLOCs and Electrochemistry Sequence processing"
+author: "Tim D'Angelo"
+date: "6/10/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+```{r}
+library(dada2); packageVersion("dada2")
+library(phyloseq)
+```
+
+
+```{r}
+path <- "~/Desktop/projects/NorthPondData/NP_seq/all_reads/"
+list.files(path)
+```
+
+
+```{r}
+# Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
+fnFs <- sort(list.files(path, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_R2_001.fastq", full.names = TRUE))
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+sample.names
+```
+
+```{r}
+plotQualityProfile(fnFs[129:130])
+```
+
+```{r}
+plotQualityProfile(fnRs[129:130])
+```
+
+```{r}
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+```
+
+
+```{r}
+plotQualityProfile(fnFs[5:6])
+```
+
+```{r}
+plotQualityProfile(fnRs[5:6])
+```
+
+```{r}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(250,200),
+              maxN=0, maxEE=c(2,2), trimLeft = 30, truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=TRUE) # On Windows set multithread=FALSE
+head(out)
+```
+
+
+```{r}
+errF <- learnErrors(filtFs, multithread=TRUE)
+errR <- learnErrors(filtRs, multithread=TRUE)
+```
+
+
+```{r}
+plotErrors(errF, nominalQ=TRUE)
+plotErrors(errR, nominalQ=TRUE)
+```
+
+```{r}
+derepFs <- derepFastq(filtFs, verbose=TRUE)
+derepRs <- derepFastq(filtRs, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(derepFs) <- sample.names
+names(derepRs) <- sample.names
+```
+
+
+```{r}
+dadaFs <- dada(derepFs, err=errF, multithread=TRUE)
+```
+
+```{r}
+dadaRs <- dada(derepRs, err=errR, multithread=TRUE)
+```
+
+
+```{r}
+dadaFs[[1]]
+```
+
+```{r}
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=TRUE)
+# Inspect the merger data.frame from the first sample
+head(mergers[[1]])
+```
+```{r}
+seqtab <- makeSequenceTable(mergers)
+```
+
+```{r}
+dim(seqtab)
+```
+
+```{r}
+table(nchar(getSequences(seqtab)))
+```
+
+```{r}
+seqtab2 <- seqtab[,nchar(colnames(seqtab)) %in% seq(345,360)]
+```
+
+
+```{r}
+seqtab.nochim <- removeBimeraDenovo(seqtab2, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim)
+```
+
+```{r}
+sum(seqtab.nochim)/sum(seqtab)
+```
+
+```{r}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+```
+
+```{r}
+write.csv(track, file = "190610_NP_readtracks.csv")
+```
+
+
+```{r}
+taxa <- assignTaxonomy(seqtab.nochim, "~/Desktop/silva_nr_v132_train_set.fa.gz", multithread=TRUE)
+```
+
+```{r}
+dim(seqtab.nochim)
+```
+
+```{r}
+saveRDS(seqtab.nochim, file = "190611_NP_asv")
+saveRDS(taxa, file = "190611_NP_taxa")
+```
+
+```{r}
+np_asv <- readRDS(file="190611_NP_asv")
+np_tax <- readRDS(file="190611_NP_taxa")
+```
+
+
+
+```{r}
+asv_seqs <- colnames(np_asv)
+asv_headers <- vector(dim(np_asv)[2], mode="character")
+
+for (i in 1:dim(np_asv)[2]) {
+  asv_headers[i] <- paste(">ASV", i, sep="_")
+}
+
+  # making and writing out a fasta of our final ASV seqs:
+asv_fasta <- c(rbind(asv_headers, asv_seqs))
+write(asv_fasta, "190611_NP_All.fa")
+
+
+  # tax table:
+asv_tax <- np_tax
+row.names(asv_tax) <- sub(">", "", asv_headers)
+write.table(asv_tax, "NP_All_taxonomy.txt", sep="\t", quote=F)
+```
+
+
+```{r}
+ps <- phyloseq(otu_table(np_asv, taxa_are_rows=FALSE), 
+               tax_table(np_tax))
+ps
+```
+
+```{r}
+meta <- read.csv("all-meta.csv", row.names = 1)
+pm <- sample_data(meta)
+dim(pm)
+```
+
+
+```{r}
+ps_m <- merge_phyloseq(ps, pm)
+dim(sample_data(ps_m))
+```
+
+
+```{r}
+taxa_names(ps_m) <- paste("ASV_", 1:ntaxa(ps_m))
+ps_m
+```
+
+```{r}
+colnames(tax_table(ps_m)) <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus")
+```
+
+```{r}
+saveRDS(ps_m , file="NP_ALL_ps")
+```
+
+```{r}
+write.csv(otu_table(ps_m), file = "NP_ALL_asv.csv")
+```
+
+
+```{r}
+NP_FLOCS_ps <- subset_samples(ps_m, project=="flocs")
+NP_FLOCS_ps
+saveRDS(NP_FLOCS_ps, file="NP_FLOCS_ps")
+```
+
+```{r}
+NP_EC_ps <- subset_samples(ps_m, project=="ec")
+NP_EC_ps
+saveRDS(NP_EC_ps, file="NP_EC_ps")
+```
+
+
+downstream processing in seperate files
