@@ -1,0 +1,124 @@
+---
+title: "Beta Diversity and Differential Abundance Tests for the North Pond FLOCs experiments"
+author: "Tim D'Angelo"
+date: "4/17/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(phyloseq)
+library(decontam)
+library(ALDEx2)
+library(zCompositions)
+library(vegan)
+```
+
+
+```{r}
+ps <- readRDS(file="NP_FLOCSv138_ps") # file seqproc file, updated with Silva v138 taxonomy
+meta <- read.csv("flocs-meta.csv", row.names = 1)
+pm <- sample_data(meta)
+ps_m <- merge_phyloseq(ps, pm)
+```
+
+
+```{r}
+npfa_rel <- transform_sample_counts(ps_m, function(x) x/sum(x)) # convert to relative abundance for Decontam 
+```
+
+```{r}
+sample_data(npfa_rel)$is.neg <- sample_data(npfa_rel)$decontam == "NTC"
+contamdf.prev025 <- isContaminant(npfa_rel, method="prevalence", neg="is.neg", threshold=0.25)
+table(contamdf.prev025$contaminant)
+```
+
+ASVs flagged as contaminants by Decontam. Manualy removed ASV_11, annotated as Ralstonia. It is not flagged by Decontam but is suspicious because it is in all NTCs
+```{r}
+npfa_36cont <- c("ASV_162", "ASV_165", "ASV_328", "ASV_344", "ASV_400", "ASV_411", "ASV_415", "ASV_426", "ASV_450", "ASV_512", "ASV_524", "ASV_689", "ASV_690", "ASV_692", "ASV_818", "ASV_904", "ASV_950", "ASV_986", "ASV_1010", "ASV_1018", "ASV_1035", "ASV_1156", "ASV_1312", "ASV_1365", "ASV_1368", "ASV_1561", "ASV_1654", "ASV_1760", "ASV_1825", "ASV_2142", "ASV_2143", "ASV_2505", "ASV_2507", "ASV_2690", "ASV_2854", "ASV_3314", "ASV_11")
+```
+
+
+```{r}
+pop_taxa = function(physeq, badTaxa){
+  allTaxa = taxa_names(physeq)
+  myTaxa <- allTaxa[!(allTaxa %in% badTaxa)]
+  return(prune_taxa(myTaxa, physeq))
+}
+```
+
+```{r}
+npfa_nocont = pop_taxa(ps_m, npfa_36cont)
+npfa_nocont
+```
+
+```{r}
+npfa_nocontSO <- subset_samples(npfa_nocont, decontam =="sample") # remove NTC samples
+npfa_nocontSO
+```
+
+
+Remove ASVs with count = 0. These are ASVs only present in the electrochemistry dataset. 
+```{r}
+wh0 = genefilter_sample(npfa_nocontSO, filterfun_sample(function(x) x > 0))
+npfa_nocontPR = prune_taxa(wh0, npfa_nocontSO)
+npfa_nocontPR
+```
+
+
+
+DADA2 does not produce singletons, the minimum count of an ASV is 2. Here ASVs with counts of 2 are removed and only ASVs present in 4 or more samples are removed.  This removes a large number of ASVs but a very small fraction of the total reads in the dataset, indicating they are spurious. 
+```{r}
+wh0 = genefilter_sample(npfa_nocontPR, filterfun_sample(function(x) x > 2), A=0.05*nsamples(npfa_nocontPR))
+npfa_pr = prune_taxa(wh0, npfa_nocontPR)
+npfa_pr
+```
+
+
+Same thing for downhole samples only.
+```{r}
+npfa_DH <- subset_samples(npfa_nocontPR, FlocsLoc=="DH")
+wh0 = genefilter_sample(npfa_DH, filterfun_sample(function(x) x > 2), A=0.05*nsamples(npfa_DH))
+DH_pr = prune_taxa(wh0, npfa_DH)
+DH_pr
+```
+
+
+Example code for calculation of Aitchison Distance and Ordination vis Multidimensional Scaleing (Principle Coordinates Analysis)
+```{r}
+#write.csv(otu_table(npfa_pr), file = "npfa_asv_pr.csv")
+#pr_asv <- read.csv("npfa_asv_pr.csv", header = TRUE, row.names = 1)
+```
+
+```{r}
+d.czm <- cmultRepl(pr_asv,  label=0, method="CZM")
+d.clr <- t(apply(d.czm, 1, function(x){log(x) - mean(log(x))}))
+a.dist <- dist(d.clr)
+```
+
+
+```{r}
+Aitchinson_PCA <- ordinate(npfa_pr, 'MDS', distance=a.dist)
+```
+
+Example Code for Differential Tests
+```{r}
+cork_v_lite.meta <- read.csv(file="cork-corklite-meta.csv", header = TRUE, row.names=1) # metadata delineating U1383C + U1382A from U1382B
+write.csv(otu_table(DH_pr), file = "DH_cork_comp.csv") #
+DH_cork_asv <- read.csv("DH_cork_comp.csv", header = TRUE, row.names = 1) #
+DH_cork_T <- t(DH_cork_asv) # ASV count table in correct format
+conds <- as.character(cork_v_lite.meta$CorkType) # define categories
+```
+
+Run ALDEX2 Tests. Figures in paper only included ASVs with an effect size greater than 1 and BH corrected p value > 0.05
+```{r}
+#cork_ALDEX2 <- aldex.clr(DH_cork_T, conds = conds, mc.samples=128)
+#cork_effects <- aldex.effect(cork_ALDEX2, conds)
+#cork_stat <- aldex.ttest(cork_ALDEX2, conds)
+#cork_DAT <- data.frame(cork_effects, cork_stat)
+```
+
+
